@@ -279,7 +279,11 @@ add_custom_rule() {
       # Save if permanent
       if [ "$temp_choice" = "1" ]; then
         if command -v iptables-save > /dev/null; then
-          iptables-save > /etc/iptables/rules.v4 2>/dev/null || iptables-save > /etc/iptables.rules
+            if command -v iptables-save > /dev/null; then
+              iptables-save > /etc/iptables/rules.v4 2>/dev/null || iptables-save > /etc/iptables.rules
+            else
+            echo -e "${YELLOW}Warning: iptables-save not found. Rules may not persist after reboot.${NC}"
+          fi
           echo -e "${GREEN}Rules saved permanently.${NC}"
         else
           echo -e "${YELLOW}Warning: iptables-save not found. Rule may not persist after reboot.${NC}"
@@ -1054,8 +1058,9 @@ preconfigured_rules() {
   echo "4) FTP server"
   echo "5) VPN server (WireGuard)"
   echo "6) Database server"
-  echo "7) Back to main menu"
-  echo -e "${BLUE}Enter your choice (1-7):${NC} "
+  echo "7) ERPNext server (port 8080)"
+  echo "8) Back to main menu"
+  echo -e "${BLUE}Enter your choice (1-8):${NC} "
   read -r preset_choice
   
   # Backup current rules before applying preset
@@ -1389,8 +1394,50 @@ preconfigured_rules() {
         echo -e "${YELLOW}Operation cancelled.${NC}"
       fi
       ;;
+
+          7)
+      # ERPNext server (port 8080)
+      echo -e "${YELLOW}Applying ERPNext server preset...${NC}"
       
-    7)
+      # Confirm
+      echo -e "${RED}Warning: This will replace all current rules.${NC}"
+      echo -e "${BLUE}Confirm? (y/n):${NC} "
+      read -r confirm
+      
+      if [[ "$confirm" =~ ^[Yy]$ ]]; then
+        # Clear existing rules
+        iptables -F
+        iptables -X
+
+        # Set default policies
+        iptables -P INPUT DROP
+        iptables -P FORWARD DROP
+        iptables -P OUTPUT ACCEPT
+
+        # Allow loopback and established connections
+        iptables -A INPUT -i lo -j ACCEPT
+        iptables -A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+
+        # Allow SSH (optional)
+        iptables -A INPUT -p tcp --dport 22 -j ACCEPT
+
+        # Allow ERPNext web interface (port 8080)
+        iptables -A INPUT -p tcp --dport 8080 -i wg0 -s 10.0.0.0/24 -j ACCEPT
+
+        echo -e "${GREEN}ERPNext preset applied successfully!${NC}"
+        log_action "Applied ERPNext server preset"
+
+        # Save changes
+        if command -v iptables-save > /dev/null; then
+          iptables-save > /etc/iptables/rules.v4 2>/dev/null || iptables-save > /etc/iptables.rules
+        fi
+      else
+        echo -e "${YELLOW}Operation cancelled.${NC}"
+      fi
+      ;;
+
+
+    8)
       # Back to main menu
       return
       ;;
@@ -1666,6 +1713,66 @@ if ! command -v iptables &> /dev/null; then
   else
     echo -e "${GREEN}iptables a été installé avec succès!${NC}"
   fi
+fi
+
+# After the section that checks if iptables is installed, add this code:
+
+# Check if iptables-save is installed
+if ! command -v iptables-save &> /dev/null; then
+  echo -e "${YELLOW}iptables-save is not installed. Attempting to install...${NC}"
+  
+  # Check if we have sudo or root privileges
+  if [ "$EUID" -ne 0 ]; then
+    echo -e "${YELLOW}Administrator privileges required to install iptables-persistent.${NC}"
+    echo -e "${YELLOW}Running sudo apt update && sudo apt install iptables-persistent${NC}"
+    sudo apt update && sudo apt install iptables-persistent
+  else
+    # Already running as root
+    echo -e "${YELLOW}Running apt update && apt install iptables-persistent${NC}"
+    apt update && apt install iptables-persistent
+  fi
+  
+  # Check if installation was successful
+  if ! command -v iptables-save &> /dev/null; then
+    # Try to find iptables-save in common locations
+    if [ -f "/sbin/iptables-save" ]; then
+      echo -e "${GREEN}iptables-save found in /sbin/iptables-save${NC}"
+      # Create a function to use the full path
+      iptables-save() {
+        /sbin/iptables-save "$@"
+      }
+      export -f iptables-save
+    elif [ -f "/usr/sbin/iptables-save" ]; then
+      echo -e "${GREEN}iptables-save found in /usr/sbin/iptables-save${NC}"
+      # Create a function to use the full path
+      iptables-save() {
+        /usr/sbin/iptables-save "$@"
+      }
+      export -f iptables-save
+    else
+      echo -e "${YELLOW}Alternative installation via netfilter-persistent...${NC}"
+      apt update && apt install netfilter-persistent
+      
+      if ! command -v iptables-save &> /dev/null; then
+        echo -e "${RED}Failed to install iptables-save. Rules will not persist after reboot.${NC}"
+        # Create a dummy function to avoid errors
+        iptables-save() {
+          echo "Warning: iptables-save is not available. Rules will not be saved permanently."
+          return 0
+        }
+        export -f iptables-save
+      else
+        echo -e "${GREEN}iptables-save was successfully installed via netfilter-persistent!${NC}"
+      fi
+    fi
+  else
+    echo -e "${GREEN}iptables-save was successfully installed!${NC}"
+  fi
+fi
+
+# Create backup directories if iptables-save is available
+if command -v iptables-save &> /dev/null; then
+  mkdir -p /etc/iptables
 fi
 
 # Test if iptables works
