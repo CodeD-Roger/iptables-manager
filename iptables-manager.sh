@@ -1715,59 +1715,76 @@ if ! command -v iptables &> /dev/null; then
   fi
 fi
 
-# After the section that checks if iptables is installed, add this code:
 
-# Check if iptables-save is installed
-if ! command -v iptables-save &> /dev/null; then
-  echo -e "${YELLOW}iptables-save is not installed. Attempting to install...${NC}"
+# Check if iptables, iptables-save, and iptables-restore are installed
+if ! command -v iptables &> /dev/null || ! command -v iptables-save &> /dev/null || ! command -v iptables-restore &> /dev/null; then
+  echo -e "${YELLOW}Some iptables components are missing. Attempting to install...${NC}"
   
   # Check if we have sudo or root privileges
   if [ "$EUID" -ne 0 ]; then
-    echo -e "${YELLOW}Administrator privileges required to install iptables-persistent.${NC}"
-    echo -e "${YELLOW}Running sudo apt update && sudo apt install iptables-persistent${NC}"
-    sudo apt update && sudo apt install iptables-persistent
+    echo -e "${YELLOW}Administrator privileges required to install iptables packages.${NC}"
+    echo -e "${YELLOW}Running sudo apt update && sudo apt install iptables iptables-persistent${NC}"
+    sudo apt update && sudo apt install iptables iptables-persistent
   else
     # Already running as root
-    echo -e "${YELLOW}Running apt update && apt install iptables-persistent${NC}"
-    apt update && apt install iptables-persistent
+    echo -e "${YELLOW}Running apt update && apt install iptables iptables-persistent${NC}"
+    apt update && apt install iptables iptables-persistent
   fi
   
   # Check if installation was successful
-  if ! command -v iptables-save &> /dev/null; then
-    # Try to find iptables-save in common locations
-    if [ -f "/sbin/iptables-save" ]; then
-      echo -e "${GREEN}iptables-save found in /sbin/iptables-save${NC}"
-      # Create a function to use the full path
-      iptables-save() {
-        /sbin/iptables-save "$@"
-      }
-      export -f iptables-save
-    elif [ -f "/usr/sbin/iptables-save" ]; then
-      echo -e "${GREEN}iptables-save found in /usr/sbin/iptables-save${NC}"
-      # Create a function to use the full path
-      iptables-save() {
-        /usr/sbin/iptables-save "$@"
-      }
-      export -f iptables-save
-    else
-      echo -e "${YELLOW}Alternative installation via netfilter-persistent...${NC}"
-      apt update && apt install netfilter-persistent
-      
-      if ! command -v iptables-save &> /dev/null; then
-        echo -e "${RED}Failed to install iptables-save. Rules will not persist after reboot.${NC}"
-        # Create a dummy function to avoid errors
-        iptables-save() {
-          echo "Warning: iptables-save is not available. Rules will not be saved permanently."
-          return 0
-        }
-        export -f iptables-save
-      else
-        echo -e "${GREEN}iptables-save was successfully installed via netfilter-persistent!${NC}"
+  missing_commands=""
+  if ! command -v iptables &> /dev/null; then missing_commands="$missing_commands iptables"; fi
+  if ! command -v iptables-save &> /dev/null; then missing_commands="$missing_commands iptables-save"; fi
+  if ! command -v iptables-restore &> /dev/null; then missing_commands="$missing_commands iptables-restore"; fi
+  
+  if [ -n "$missing_commands" ]; then
+    echo -e "${YELLOW}Still missing:$missing_commands. Trying alternative methods...${NC}"
+    
+    # Try to find commands in common locations
+    for cmd in iptables iptables-save iptables-restore; do
+      if ! command -v $cmd &> /dev/null; then
+        if [ -f "/sbin/$cmd" ]; then
+          echo -e "${GREEN}$cmd found in /sbin/$cmd${NC}"
+          # Create a function to use the full path
+          eval "$cmd() { /sbin/$cmd \"\$@\"; }"
+          export -f $cmd
+        elif [ -f "/usr/sbin/$cmd" ]; then
+          echo -e "${GREEN}$cmd found in /usr/sbin/$cmd${NC}"
+          # Create a function to use the full path
+          eval "$cmd() { /usr/sbin/$cmd \"\$@\"; }"
+          export -f $cmd
+        else
+          echo -e "${RED}Could not find $cmd. Some functionality may be limited.${NC}"
+          
+          # Create dummy functions to avoid errors
+          if [ "$cmd" = "iptables-save" ]; then
+            iptables-save() {
+              echo "Warning: iptables-save is not available. Rules will not be saved permanently."
+              return 0
+            }
+            export -f iptables-save
+          elif [ "$cmd" = "iptables-restore" ]; then
+            iptables-restore() {
+              echo "Warning: iptables-restore is not available. Cannot restore saved rules."
+              return 0
+            }
+            export -f iptables-restore
+          fi
+        fi
       fi
-    fi
+    done
+    
+    # Try one more alternative installation
+    echo -e "${YELLOW}Trying alternative installation via netfilter-persistent...${NC}"
+    apt update && apt install netfilter-persistent || true
   else
-    echo -e "${GREEN}iptables-save was successfully installed!${NC}"
+    echo -e "${GREEN}All required iptables components are now installed!${NC}"
   fi
+fi
+
+# Create backup directories if iptables-save is available
+if command -v iptables-save &> /dev/null; then
+  mkdir -p /etc/iptables
 fi
 
 # Create backup directories if iptables-save is available
