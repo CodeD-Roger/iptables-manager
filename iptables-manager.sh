@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # iptables-manager.sh - Interactive iptables firewall management script
-# Author: v0
+# Author: CodeD-Roger
 # Date: 2025-03-23
 
 # Colors for better UI
