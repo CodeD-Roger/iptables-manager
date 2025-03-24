@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # iptables-manager.sh - Interactive iptables firewall management script
-# Author: CodeD-Roger
+# Author: v0
 # Date: 2025-03-23
 
 # Colors for better UI
@@ -22,10 +22,12 @@ fi
 # Configuration directory
 CONFIG_DIR="/etc/iptables-manager"
 PROFILES_DIR="$CONFIG_DIR/profiles"
+ROUTES_DIR="$CONFIG_DIR/routes"
 LOG_FILE="/var/log/iptables_manager.log"
 
 # Create necessary directories if they don't exist
 mkdir -p "$PROFILES_DIR"
+mkdir -p "$ROUTES_DIR"
 touch "$LOG_FILE"
 
 # Log function
@@ -118,6 +120,27 @@ show_dashboard() {
   iptables -L INPUT -v -n | tail -n +3 | sort -rn -k 1 | head -5 | \
     awk '{printf "  %s packets (%s bytes) - %s\n", $1, $2, $0}' | \
     sed -E 's/  [0-9]+ packets $$[0-9]+ bytes$$ - [0-9]+ [0-9]+ //g'
+  
+  # IP Forwarding status
+  echo -e "\n${YELLOW}IP Forwarding Status:${NC}"
+  if [ "$(cat /proc/sys/net/ipv4/ip_forward)" -eq 1 ]; then
+    echo -e "  ${GREEN}Enabled${NC}"
+  else
+    echo -e "  ${RED}Disabled${NC}"
+  fi
+  
+  # Active network routes
+  echo -e "\n${YELLOW}Active Network Routes:${NC}"
+  if [ -d "$ROUTES_DIR" ] && [ "$(ls -A "$ROUTES_DIR" 2>/dev/null)" ]; then
+    for route_file in "$ROUTES_DIR"/*; do
+      if [ -f "$route_file" ]; then
+        route_name=$(basename "$route_file")
+        echo -e "  - $route_name"
+      fi
+    done
+  else
+    echo -e "  None configured"
+  fi
   
   echo -e "\n${BLUE}Press Enter to continue...${NC}"
   read
@@ -1395,7 +1418,7 @@ preconfigured_rules() {
       fi
       ;;
 
-          7)
+    7)
       # ERPNext server (port 8080)
       echo -e "${YELLOW}Applying ERPNext server preset...${NC}"
       
@@ -1435,7 +1458,6 @@ preconfigured_rules() {
         echo -e "${YELLOW}Operation cancelled.${NC}"
       fi
       ;;
-
 
     8)
       # Back to main menu
@@ -1635,6 +1657,394 @@ test_mode() {
   read
 }
 
+# Function to manage network routing
+manage_network_routing() {
+  show_header
+  echo -e "${CYAN}╔═══ NETWORK ROUTING MANAGEMENT ═══╗${NC}"
+  
+  echo -e "${YELLOW}Select option:${NC}"
+  echo "1) Create new network route"
+  echo "2) View existing routes"
+  echo "3) Delete a route"
+  echo "4) Enable/Disable IP forwarding"
+  echo "5) Back to main menu"
+  echo -e "${BLUE}Enter your choice (1-5):${NC} "
+  read -r route_choice
+  
+  case $route_choice in
+    1)
+      # Create new network route
+      create_network_route
+      ;;
+      
+    2)
+      # View existing routes
+      view_network_routes
+      ;;
+      
+    3)
+      # Delete a route
+      delete_network_route
+      ;;
+      
+    4)
+      # Enable/Disable IP forwarding
+      toggle_ip_forwarding
+      ;;
+      
+    5)
+      # Back to main menu
+      return
+      ;;
+      
+    *)
+      echo -e "${RED}Invalid choice. Returning to main menu.${NC}"
+      sleep 2
+      return
+      ;;
+  esac
+}
+
+# Function to create a new network route
+create_network_route() {
+  show_header
+  echo -e "${CYAN}╔═══ CREATE NETWORK ROUTE ═══╗${NC}"
+  
+  # Get route name
+  echo -e "${YELLOW}Enter a name for this route:${NC} "
+  read -r route_name
+  
+  if [ -z "$route_name" ]; then
+    echo -e "${RED}Route name cannot be empty.${NC}"
+    echo -e "\n${BLUE}Press Enter to continue...${NC}"
+    read
+    return
+  fi
+  
+  # Sanitize route name
+  route_name=$(echo "$route_name" | tr -cd '[:alnum:]._-')
+  route_file="$ROUTES_DIR/$route_name"
+  
+  # Check if route already exists
+  if [ -f "$route_file" ]; then
+    echo -e "${YELLOW}Route already exists. Overwrite? (y/n):${NC} "
+    read -r overwrite
+    
+    if ! [[ "$overwrite" =~ ^[Yy]$ ]]; then
+      echo -e "${YELLOW}Operation cancelled.${NC}"
+      echo -e "\n${BLUE}Press Enter to continue...${NC}"
+      read
+      return
+    fi
+  fi
+  
+  # Source interface
+  echo -e "\n${YELLOW}Enter source interface (e.g., wg0):${NC} "
+  read -r source_interface
+  
+  if [ -z "$source_interface" ]; then
+    echo -e "${RED}Source interface cannot be empty.${NC}"
+    echo -e "\n${BLUE}Press Enter to continue...${NC}"
+    read
+    return
+  fi
+  
+  # Source network
+  echo -e "\n${YELLOW}Enter source network (e.g., 10.0.0.0/24):${NC} "
+  read -r source_network
+  
+  if [ -z "$source_network" ]; then
+    echo -e "${RED}Source network cannot be empty.${NC}"
+    echo -e "\n${BLUE}Press Enter to continue...${NC}"
+    read
+    return
+  fi
+  
+  # Destination interface
+  echo -e "\n${YELLOW}Enter destination interface (e.g., eth0):${NC} "
+  read -r dest_interface
+  
+  if [ -z "$dest_interface" ]; then
+    echo -e "${RED}Destination interface cannot be empty.${NC}"
+    echo -e "\n${BLUE}Press Enter to continue...${NC}"
+    read
+    return
+  fi
+  
+  # Destination network
+  echo -e "\n${YELLOW}Enter destination network (e.g., 192.168.1.0/24):${NC} "
+  read -r dest_network
+  
+  if [ -z "$dest_network" ]; then
+    echo -e "${RED}Destination network cannot be empty.${NC}"
+    echo -e "\n${BLUE}Press Enter to continue...${NC}"
+    read
+    return
+  fi
+  
+  # Specific port to forward (optional)
+  echo -e "\n${YELLOW}Enter specific port to forward (leave empty for all traffic):${NC} "
+  read -r forward_port
+  
+  # Protocol for port forwarding (if port specified)
+  protocol=""
+  if [ -n "$forward_port" ]; then
+    echo -e "\n${YELLOW}Select protocol for port forwarding:${NC}"
+    echo "1) TCP"
+    echo "2) UDP"
+    echo "3) Both (TCP and UDP)"
+    echo -e "${BLUE}Enter your choice (1-3):${NC} "
+    read -r protocol_choice
+    
+    case $protocol_choice in
+      1) protocol="tcp" ;;
+      2) protocol="udp" ;;
+      3) protocol="both" ;;
+      *) 
+        echo -e "${RED}Invalid choice. Using both TCP and UDP.${NC}"
+        protocol="both"
+        ;;
+    esac
+  fi
+  
+  # Enable NAT
+  echo -e "\n${YELLOW}Enable NAT for this route? (y/n):${NC} "
+  read -r enable_nat
+  
+  # Create a temporary file with the commands
+  temp_file=$(mktemp)
+  
+  # Add commands to enable IP forwarding
+  echo "# Enable IP forwarding" > "$temp_file"
+  echo "echo 1 > /proc/sys/net/ipv4/ip_forward" >> "$temp_file"
+  
+  # Add forwarding rules
+  echo -e "\n# Allow forwarding between interfaces" >> "$temp_file"
+  echo "iptables -A FORWARD -i $source_interface -o $dest_interface -s $source_network -d $dest_network -j ACCEPT" >> "$temp_file"
+  echo "iptables -A FORWARD -i $dest_interface -o $source_interface -s $dest_network -d $source_network -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT" >> "$temp_file"
+  
+  # Add specific port forwarding if specified
+  if [ -n "$forward_port" ]; then
+    echo -e "\n# Port forwarding for port $forward_port" >> "$temp_file"
+    
+    if [ "$protocol" = "tcp" ] || [ "$protocol" = "both" ]; then
+      echo "iptables -A FORWARD -i $source_interface -o $dest_interface -p tcp -s $source_network -d $dest_network --dport $forward_port -j ACCEPT" >> "$temp_file"
+      echo "iptables -A FORWARD -i $dest_interface -o $source_interface -p tcp -s $dest_network -d $source_network --sport $forward_port -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT" >> "$temp_file"
+    fi
+    
+    if [ "$protocol" = "udp" ] || [ "$protocol" = "both" ]; then
+      echo "iptables -A FORWARD -i $source_interface -o $dest_interface -p udp -s $source_network -d $dest_network --dport $forward_port -j ACCEPT" >> "$temp_file"
+      echo "iptables -A FORWARD -i $dest_interface -o $source_interface -p udp -s $dest_network -d $source_network --sport $forward_port -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT" >> "$temp_file"
+    fi
+  fi
+  
+  # Add NAT if requested
+  if [[ "$enable_nat" =~ ^[Yy]$ ]]; then
+    echo -e "\n# Enable NAT" >> "$temp_file"
+    echo "iptables -t nat -A POSTROUTING -s $source_network -o $dest_interface -j MASQUERADE" >> "$temp_file"
+  fi
+  
+  # Add commands to make IP forwarding persistent
+  echo -e "\n# Make IP forwarding persistent" >> "$temp_file"
+  echo "if [ -f /etc/sysctl.conf ]; then" >> "$temp_file"
+  echo "  if ! grep -q \"net.ipv4.ip_forward=1\" /etc/sysctl.conf; then" >> "$temp_file"
+  echo "    echo \"net.ipv4.ip_forward=1\" >> /etc/sysctl.conf" >> "$temp_file"
+  echo "  fi" >> "$temp_file"
+  echo "fi" >> "$temp_file"
+  
+  # Save the route file
+  cp "$temp_file" "$route_file"
+  rm "$temp_file"
+  
+  # Display the route configuration
+  echo -e "\n${YELLOW}Route configuration:${NC}"
+  cat "$route_file"
+  
+  # Ask if user wants to apply the route now
+  echo -e "\n${YELLOW}Apply this route now? (y/n):${NC} "
+  read -r apply_now
+  
+  if [[ "$apply_now" =~ ^[Yy]$ ]]; then
+    # Apply the route
+    bash "$route_file"
+    
+    if [ $? -eq 0 ]; then
+      echo -e "${GREEN}Route applied successfully!${NC}"
+      log_action "Applied network route: $route_name"
+      
+      # Save iptables rules
+      if command -v iptables-save > /dev/null; then
+        iptables-save > /etc/iptables/rules.v4 2>/dev/null || iptables-save > /etc/iptables.rules
+      fi
+    else
+      echo -e "${RED}Failed to apply route.${NC}"
+    fi
+  else
+    echo -e "${YELLOW}Route saved but not applied.${NC}"
+  fi
+  
+  echo -e "\n${BLUE}Press Enter to continue...${NC}"
+  read
+}
+
+# Function to view existing network routes
+view_network_routes() {
+  show_header
+  echo -e "${CYAN}╔═══ VIEW NETWORK ROUTES ═══╗${NC}"
+  
+  if [ -d "$ROUTES_DIR" ] && [ "$(ls -A "$ROUTES_DIR" 2>/dev/null)" ]; then
+    echo -e "${YELLOW}Available routes:${NC}"
+    
+    for route_file in "$ROUTES_DIR"/*; do
+      if [ -f "$route_file" ]; then
+        route_name=$(basename "$route_file")
+        echo -e "\n${GREEN}=== $route_name ===${NC}"
+        cat "$route_file"
+        echo -e "${BLUE}------------------------${NC}"
+      fi
+    done
+  else
+    echo -e "${YELLOW}No routes found.${NC}"
+  fi
+  
+  echo -e "\n${BLUE}Press Enter to continue...${NC}"
+  read
+}
+
+# Function to delete a network route
+delete_network_route() {
+  show_header
+  echo -e "${CYAN}╔═══ DELETE NETWORK ROUTE ═══╗${NC}"
+  
+  if [ -d "$ROUTES_DIR" ] && [ "$(ls -A "$ROUTES_DIR" 2>/dev/null)" ]; then
+    echo -e "${YELLOW}Available routes:${NC}"
+    ls -1 "$ROUTES_DIR" 2>/dev/null
+    
+    echo -e "\n${YELLOW}Enter route name to delete:${NC} "
+    read -r route_name
+    
+    route_file="$ROUTES_DIR/$route_name"
+    
+    if [ -f "$route_file" ]; then
+      echo -e "${RED}Warning: This will permanently delete the route.${NC}"
+      echo -e "${BLUE}Confirm? (y/n):${NC} "
+      read -r confirm
+      
+      if [[ "$confirm" =~ ^[Yy]$ ]]; then
+        # Create a temporary file with commands to remove the route rules
+        temp_file=$(mktemp)
+        
+        # Extract and reverse the iptables commands
+        grep "^iptables -A" "$route_file" | sed 's/-A/-D/g' > "$temp_file"
+        
+        # Ask if user wants to remove the route rules from iptables
+        echo -e "\n${YELLOW}Remove the route rules from iptables? (y/n):${NC} "
+        read -r remove_rules
+        
+        if [[ "$remove_rules" =~ ^[Yy]$ ]]; then
+          # Apply the reversed commands
+          bash "$temp_file"
+          
+          if [ $? -eq 0 ]; then
+            echo -e "${GREEN}Route rules removed successfully!${NC}"
+            
+            # Save iptables rules
+            if command -v iptables-save > /dev/null; then
+              iptables-save > /etc/iptables/rules.v4 2>/dev/null || iptables-save > /etc/iptables.rules
+            fi
+          else
+            echo -e "${RED}Failed to remove route rules.${NC}"
+          fi
+        fi
+        
+        # Remove the temporary file
+        rm "$temp_file"
+        
+        # Delete the route file
+        rm "$route_file"
+        
+        if [ $? -eq 0 ]; then
+          echo -e "${GREEN}Route deleted successfully!${NC}"
+          log_action "Deleted network route: $route_name"
+        else
+          echo -e "${RED}Failed to delete route file.${NC}"
+        fi
+      else
+        echo -e "${YELLOW}Operation cancelled.${NC}"
+      fi
+    else
+      echo -e "${RED}Route not found.${NC}"
+    fi
+  else
+    echo -e "${YELLOW}No routes found.${NC}"
+  fi
+  
+  echo -e "\n${BLUE}Press Enter to continue...${NC}"
+  read
+}
+
+# Function to toggle IP forwarding
+toggle_ip_forwarding() {
+  show_header
+  echo -e "${CYAN}╔═══ IP FORWARDING ═══╗${NC}"
+  
+  # Check current IP forwarding status
+  ip_forward=$(cat /proc/sys/net/ipv4/ip_forward)
+  
+  if [ "$ip_forward" -eq 1 ]; then
+    echo -e "${YELLOW}IP forwarding is currently ${GREEN}ENABLED${NC}${YELLOW}.${NC}"
+    echo -e "${YELLOW}Disable IP forwarding? (y/n):${NC} "
+    read -r disable
+    
+    if [[ "$disable" =~ ^[Yy]$ ]]; then
+      echo 0 > /proc/sys/net/ipv4/ip_forward
+      
+      if [ $? -eq 0 ]; then
+        echo -e "${GREEN}IP forwarding disabled successfully!${NC}"
+        log_action "Disabled IP forwarding"
+        
+        # Update sysctl.conf
+        if [ -f /etc/sysctl.conf ]; then
+          sed -i 's/net.ipv4.ip_forward=1/net.ipv4.ip_forward=0/g' /etc/sysctl.conf
+        fi
+      else
+        echo -e "${RED}Failed to disable IP forwarding.${NC}"
+      fi
+    else
+      echo -e "${YELLOW}Operation cancelled.${NC}"
+    fi
+  else
+    echo -e "${YELLOW}IP forwarding is currently ${RED}DISABLED${NC}${YELLOW}.${NC}"
+    echo -e "${YELLOW}Enable IP forwarding? (y/n):${NC} "
+    read -r enable
+    
+    if [[ "$enable" =~ ^[Yy]$ ]]; then
+      echo 1 > /proc/sys/net/ipv4/ip_forward
+      
+      if [ $? -eq 0 ]; then
+        echo -e "${GREEN}IP forwarding enabled successfully!${NC}"
+        log_action "Enabled IP forwarding"
+        
+        # Update sysctl.conf
+        if [ -f /etc/sysctl.conf ]; then
+          if grep -q "net.ipv4.ip_forward" /etc/sysctl.conf; then
+            sed -i 's/net.ipv4.ip_forward=0/net.ipv4.ip_forward=1/g' /etc/sysctl.conf
+          else
+            echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
+          fi
+        fi
+      else
+        echo -e "${RED}Failed to enable IP forwarding.${NC}"
+      fi
+    else
+      echo -e "${YELLOW}Operation cancelled.${NC}"
+    fi
+  fi
+  
+  echo -e "\n${BLUE}Press Enter to continue...${NC}"
+  read
+}
+
 # Main menu function
 main_menu() {
   while true; do
@@ -1649,8 +2059,9 @@ main_menu() {
     echo -e "${YELLOW}7)${NC} Audit & Monitoring"
     echo -e "${YELLOW}8)${NC} Preconfigured Rules"
     echo -e "${YELLOW}9)${NC} Test Mode"
+    echo -e "${YELLOW}10)${NC} Network Routing"
     echo -e "${YELLOW}0)${NC} Exit"
-    echo -e "${BLUE}Enter your choice (0-9):${NC} "
+    echo -e "${BLUE}Enter your choice (0-10):${NC} "
     read -r choice
     
     case $choice in
@@ -1663,6 +2074,7 @@ main_menu() {
       7) audit_and_monitor ;;
       8) preconfigured_rules ;;
       9) test_mode ;;
+      10) manage_network_routing ;;
       0) 
         echo -e "${GREEN}Thank you for using the iptables manager!${NC}"
         exit 0
@@ -1713,83 +2125,6 @@ if ! command -v iptables &> /dev/null; then
   else
     echo -e "${GREEN}iptables a été installé avec succès!${NC}"
   fi
-fi
-
-
-# Check if iptables, iptables-save, and iptables-restore are installed
-if ! command -v iptables &> /dev/null || ! command -v iptables-save &> /dev/null || ! command -v iptables-restore &> /dev/null; then
-  echo -e "${YELLOW}Some iptables components are missing. Attempting to install...${NC}"
-  
-  # Check if we have sudo or root privileges
-  if [ "$EUID" -ne 0 ]; then
-    echo -e "${YELLOW}Administrator privileges required to install iptables packages.${NC}"
-    echo -e "${YELLOW}Running sudo apt update && sudo apt install iptables iptables-persistent${NC}"
-    sudo apt update && sudo apt install iptables iptables-persistent
-  else
-    # Already running as root
-    echo -e "${YELLOW}Running apt update && apt install iptables iptables-persistent${NC}"
-    apt update && apt install iptables iptables-persistent
-  fi
-  
-  # Check if installation was successful
-  missing_commands=""
-  if ! command -v iptables &> /dev/null; then missing_commands="$missing_commands iptables"; fi
-  if ! command -v iptables-save &> /dev/null; then missing_commands="$missing_commands iptables-save"; fi
-  if ! command -v iptables-restore &> /dev/null; then missing_commands="$missing_commands iptables-restore"; fi
-  
-  if [ -n "$missing_commands" ]; then
-    echo -e "${YELLOW}Still missing:$missing_commands. Trying alternative methods...${NC}"
-    
-    # Try to find commands in common locations
-    for cmd in iptables iptables-save iptables-restore; do
-      if ! command -v $cmd &> /dev/null; then
-        if [ -f "/sbin/$cmd" ]; then
-          echo -e "${GREEN}$cmd found in /sbin/$cmd${NC}"
-          # Create a function to use the full path
-          eval "$cmd() { /sbin/$cmd \"\$@\"; }"
-          export -f $cmd
-        elif [ -f "/usr/sbin/$cmd" ]; then
-          echo -e "${GREEN}$cmd found in /usr/sbin/$cmd${NC}"
-          # Create a function to use the full path
-          eval "$cmd() { /usr/sbin/$cmd \"\$@\"; }"
-          export -f $cmd
-        else
-          echo -e "${RED}Could not find $cmd. Some functionality may be limited.${NC}"
-          
-          # Create dummy functions to avoid errors
-          if [ "$cmd" = "iptables-save" ]; then
-            iptables-save() {
-              echo "Warning: iptables-save is not available. Rules will not be saved permanently."
-              return 0
-            }
-            export -f iptables-save
-          elif [ "$cmd" = "iptables-restore" ]; then
-            iptables-restore() {
-              echo "Warning: iptables-restore is not available. Cannot restore saved rules."
-              return 0
-            }
-            export -f iptables-restore
-          fi
-        fi
-      fi
-    done
-    
-    # Try one more alternative installation
-    echo -e "${YELLOW}Trying alternative installation via netfilter-persistent...${NC}"
-    apt update && apt install netfilter-persistent || true
-  else
-    echo -e "${GREEN}All required iptables components are now installed!${NC}"
-  fi
-fi
-
-# Create backup directories if iptables-save is available
-if command -v iptables-save &> /dev/null; then
-  mkdir -p /etc/iptables
-fi
-
-# Create backup directories if iptables-save is available
-if command -v iptables-save &> /dev/null; then
-  mkdir -p /etc/iptables
 fi
 
 # Test if iptables works
